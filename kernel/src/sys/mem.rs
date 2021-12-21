@@ -13,6 +13,7 @@ use x86_64::structures::paging::{
     Translate,
 };
 use x86_64::{PhysAddr, VirtAddr};
+
 pub static TOTAL_MEM: AtomicU64 = AtomicU64::new(0);
 pub static mut PHYS_MEM_OFFSET: u64 = 0;
 pub static mut MEMORY_MAP: Option<&MemoryMap> = None;
@@ -37,6 +38,7 @@ pub fn init(info: &'static BootInfo) {
             memory_size >> 10,
             memory_size >> 20
         ));
+        console.log("[WARN] Allocating Only 640KB of memory because of limitation of allocator");
         console.log("[INFO] Allocation Completed!");
     });
 }
@@ -78,7 +80,7 @@ impl BootInfoFrameAllocator {
         }
     }
 
-    fn usable_frames(&self) -> impl Iterator<Item = PhysFrame> {
+    fn usable_frames(&mut self) -> impl Iterator<Item = PhysFrame> {
         let regions = self.memory_map.iter();
         let usable_regions = regions.filter(|r| r.region_type == MemoryRegionType::Usable);
         let addr_ranges = usable_regions.map(|r| r.range.start_addr()..r.range.end_addr());
@@ -98,7 +100,8 @@ fn init_heap(
     mapper: &mut impl Mapper<Size4KiB>,
     frame_allocator: &mut impl FrameAllocator<Size4KiB>,
 ) -> Result<(), MapToError<Size4KiB>> {
-    let heap_size: u64 = TOTAL_MEM.load(Ordering::Relaxed);
+    let heap_size: u64 = 640 * 1024; //TOTAL_MEM.load(Ordering::Relaxed);
+
     let pages = {
         let heap_start = VirtAddr::new(HEAP_START as u64);
         let heap_end = heap_start + heap_size - 1u64;
@@ -108,15 +111,18 @@ fn init_heap(
     };
 
     let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
-    let frame = frame_allocator
-        .allocate_frame()
-        .ok_or(MapToError::FrameAllocationFailed)?;
-    unsafe {
-        mapper.map_to(pages.start, frame, flags, frame_allocator)?.flush();
+    for page in pages {
+        let frame = frame_allocator
+            .allocate_frame()
+            .ok_or(MapToError::FrameAllocationFailed)?;
+        unsafe {
+            mapper.map_to(page, frame, flags, frame_allocator)?.flush();
+        }
     }
 
     unsafe {
         System.lock().init(HEAP_START, heap_size as usize);
     }
+
     Ok(())
 }
